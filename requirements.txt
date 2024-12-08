@@ -1,0 +1,11 @@
+matplotlib
+shiny
+numpy
+pandas
+altair
+shinywidgets
+anywidget
+jsonschema
+joblib
+sklearn
+
