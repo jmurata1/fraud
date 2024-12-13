@@ -1,0 +1,331 @@
+COPY dev.public.bigfraud FROM 's3://final-project-credit-fraud/fraudfolder/sample_1GB.csv' IAM_ROLE 'arn:aws:iam::971422719201:role/service-role/AmazonRedshift-CommandsAccessRole-20241118T094748' FORMAT AS CSV DELIMITER ',' QUOTE '"' IGNOREHEADER 1 REGION AS 'us-east-2'
+
+-- Deleting Null
+DELETE FROM bigfraud
+WHERE trans_num IS NULL
+   OR trans_date IS NULL
+   OR trans_time IS NULL
+   OR amt IS NULL
+   OR category IS NULL
+   OR is_fraud IS NULL
+   OR job IS NULL
+   OR city_pop IS NULL
+   OR merchant IS NULL
+   OR merch_lat IS NULL
+   OR merch_long IS NULL
+   OR lat IS NULL
+   OR long IS NULL
+   OR acct_num IS NULL;
+
+-- Null Check
+SELECT 
+    SUM(CASE WHEN trans_num IS NULL THEN 1 ELSE 0 END) AS trans_num_nulls,
+    SUM(CASE WHEN trans_date IS NULL THEN 1 ELSE 0 END) AS trans_date_nulls,
+    SUM(CASE WHEN trans_time IS NULL THEN 1 ELSE 0 END) AS trans_time_nulls,
+    SUM(CASE WHEN amt IS NULL THEN 1 ELSE 0 END) AS amt_nulls,
+    SUM(CASE WHEN category IS NULL THEN 1 ELSE 0 END) AS category_nulls,
+    SUM(CASE WHEN is_fraud IS NULL THEN 1 ELSE 0 END) AS is_fraud_nulls,
+    SUM(CASE WHEN job IS NULL THEN 1 ELSE 0 END) AS job_nulls,
+    SUM(CASE WHEN city_pop IS NULL THEN 1 ELSE 0 END) AS city_pop_nulls,
+    SUM(CASE WHEN merchant IS NULL THEN 1 ELSE 0 END) AS merchant_nulls,
+    SUM(CASE WHEN merch_lat IS NULL THEN 1 ELSE 0 END) AS merch_lat_nulls,
+    SUM(CASE WHEN merch_long IS NULL THEN 1 ELSE 0 END) AS merch_long_nulls,
+    SUM(CASE WHEN lat IS NULL THEN 1 ELSE 0 END) AS lat_nulls,
+    SUM(CASE WHEN long IS NULL THEN 1 ELSE 0 END) AS long_nulls,
+    SUM(CASE WHEN acct_num IS NULL THEN 1 ELSE 0 END) AS acct_num_nulls
+FROM bigfraud;
+
+-- Check unique job entries and their frequency
+SELECT job, COUNT(*) as count
+FROM bigfraud
+GROUP BY job
+ORDER BY count DESC;
+
+-- 1a. Basic Overview Statistics
+SELECT 
+    COUNT(*) as total_transactions,
+    SUM(CASE WHEN is_fraud = true THEN 1 ELSE 0 END) as fraud_count,
+    ROUND(100.0 * SUM(CASE WHEN is_fraud = true THEN 1 ELSE 0 END) / COUNT(*), 2) as fraud_percentage,
+    MIN(amt) as min_amount,
+    MAX(amt) as max_amount,
+    AVG(amt) as avg_amount,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amt) as median_amount
+FROM bigfraud;
+
+-- 1b. Create more balanced dataset with 20% fraud and 80% non fraud
+-- First, drop the table if it exists
+DROP TABLE IF EXISTS balanced_bigfraud;
+
+-- Create the balanced table
+CREATE TABLE balanced_bigfraud AS (
+    WITH fraud_count AS (
+        SELECT COUNT(*) as total_fraud 
+        FROM bigfraud 
+        WHERE is_fraud = true
+    ),
+    sampled_non_fraud AS (
+        SELECT 
+            trans_num, trans_date, trans_time, amt, category, 
+            is_fraud, job, city_pop, merchant, 
+            merch_lat, merch_long, lat, long, acct_num
+        FROM (
+            SELECT 
+                trans_num, trans_date, trans_time, amt, category, 
+                is_fraud, job, city_pop, merchant, 
+                merch_lat, merch_long, lat, long, acct_num,
+                ROW_NUMBER() OVER (ORDER BY RANDOM()) as row_num
+            FROM bigfraud 
+            WHERE is_fraud = false
+        ) subq
+        WHERE row_num <= (SELECT total_fraud * 4 FROM fraud_count)
+    )
+    SELECT 
+        trans_num, trans_date, trans_time, amt, category, 
+        is_fraud, job, city_pop, merchant, 
+        merch_lat, merch_long, lat, long, acct_num
+    FROM bigfraud 
+    WHERE is_fraud = true
+    
+    UNION ALL
+    
+    SELECT 
+        trans_num, trans_date, trans_time, amt, category, 
+        is_fraud, job, city_pop, merchant, 
+        merch_lat, merch_long, lat, long, acct_num
+    FROM sampled_non_fraud
+);
+
+SELECT 
+    COUNT(*) as total_transactions,
+    SUM(CASE WHEN is_fraud = true THEN 1 ELSE 0 END) as fraud_count,
+    SUM(CASE WHEN is_fraud = false THEN 1 ELSE 0 END) as non_fraud_count,
+    ROUND(100.0 * SUM(CASE WHEN is_fraud = true THEN 1 ELSE 0 END) / COUNT(*), 2) as fraud_percentage
+FROM balanced_bigfraud;
+
+
+-- 2. Fraud Analysis by Transaction Amount Ranges
+SELECT 
+    CASE 
+        WHEN amt < 250 THEN '0-250'
+        WHEN amt < 500 THEN '250-500'
+        WHEN amt < 750 THEN '500-750'
+        WHEN amt < 1000 THEN '750-1000'
+        WHEN amt < 1250 THEN '1000-1250'
+        WHEN amt < 1500 THEN '1250-1500'
+        ELSE '1500+'
+    END as amount_range,
+    COUNT(*) as transaction_count,
+    SUM(CASE WHEN is_fraud = true THEN 1 ELSE 0 END) as fraud_count,
+    ROUND(100.0 * SUM(CASE WHEN is_fraud = true THEN 1 ELSE 0 END) / COUNT(*), 2) as fraud_percentage
+FROM bigfraud
+GROUP BY 1
+ORDER BY fraud_percentage DESC;
+
+-- 3. Fraud by Category (Top 10 Risky Categories)
+SELECT DISTINCT category
+FROM bigfraud;
+
+SELECT 
+    category,
+    COUNT(*) as total_transactions,
+    SUM(CASE WHEN is_fraud = true THEN 1 ELSE 0 END) as fraud_count,
+    ROUND(100.0 * SUM(CASE WHEN is_fraud = true THEN 1 ELSE 0 END) / COUNT(*), 2) as fraud_percentage,
+    ROUND(AVG(amt), 2) as avg_transaction_amount
+FROM bigfraud
+GROUP BY category
+HAVING COUNT(*) > 100  -- Filter out categories with few transactions
+ORDER BY fraud_percentage DESC;
+
+-- 4. Time-based Analysis (Hour of Day)
+SELECT 
+    CAST(SUBSTRING(trans_time, 1, 2) AS INTEGER) as hour_of_day,
+    COUNT(*) as total_transactions,
+    SUM(CASE WHEN is_fraud = true THEN 1 ELSE 0 END) as fraud_count,
+    ROUND(100.0 * SUM(CASE WHEN is_fraud = true THEN 1 ELSE 0 END) / COUNT(*), 2) as fraud_percentage
+FROM bigfraud
+GROUP BY 1
+ORDER BY 1;
+
+-- 5. Geographic Analysis (distance between )
+-- Group transactions by larger distance ranges and calculate fraud percentage
+SELECT 
+    CASE 
+        WHEN 
+            ROUND(3959 * ACOS(
+                COS(RADIANS(CAST(lat AS DECIMAL))) *
+                COS(RADIANS(CAST(merch_lat AS DECIMAL))) *
+                COS(RADIANS(CAST(long AS DECIMAL)) - RADIANS(CAST(merch_long AS DECIMAL))) +
+                SIN(RADIANS(CAST(lat AS DECIMAL))) *
+                SIN(RADIANS(CAST(merch_lat AS DECIMAL)))
+            ), 2) BETWEEN 0 AND 10 THEN '0-10 miles'
+        WHEN 
+            ROUND(3959 * ACOS(
+                COS(RADIANS(CAST(lat AS DECIMAL))) *
+                COS(RADIANS(CAST(merch_lat AS DECIMAL))) *
+                COS(RADIANS(CAST(long AS DECIMAL)) - RADIANS(CAST(merch_long AS DECIMAL))) +
+                SIN(RADIANS(CAST(lat AS DECIMAL))) *
+                SIN(RADIANS(CAST(merch_lat AS DECIMAL)))
+            ), 2) BETWEEN 10 AND 25 THEN '10-25 miles'
+        WHEN 
+            ROUND(3959 * ACOS(
+                COS(RADIANS(CAST(lat AS DECIMAL))) *
+                COS(RADIANS(CAST(merch_lat AS DECIMAL))) *
+                COS(RADIANS(CAST(long AS DECIMAL)) - RADIANS(CAST(merch_long AS DECIMAL))) +
+                SIN(RADIANS(CAST(lat AS DECIMAL))) *
+                SIN(RADIANS(CAST(merch_lat AS DECIMAL)))
+            ), 2) BETWEEN 25 AND 40 THEN '25-40 miles'
+        WHEN 
+            ROUND(3959 * ACOS(
+                COS(RADIANS(CAST(lat AS DECIMAL))) *
+                COS(RADIANS(CAST(merch_lat AS DECIMAL))) *
+                COS(RADIANS(CAST(long AS DECIMAL)) - RADIANS(CAST(merch_long AS DECIMAL))) +
+                SIN(RADIANS(CAST(lat AS DECIMAL))) *
+                SIN(RADIANS(CAST(merch_lat AS DECIMAL)))
+            ), 2) BETWEEN 40 AND 55 THEN '40-55 miles'
+        WHEN 
+            ROUND(3959 * ACOS(
+                COS(RADIANS(CAST(lat AS DECIMAL))) *
+                COS(RADIANS(CAST(merch_lat AS DECIMAL))) *
+                COS(RADIANS(CAST(long AS DECIMAL)) - RADIANS(CAST(merch_long AS DECIMAL))) +
+                SIN(RADIANS(CAST(lat AS DECIMAL))) *
+                SIN(RADIANS(CAST(merch_lat AS DECIMAL)))
+            ), 2) BETWEEN 55 AND 70 THEN '55-70 miles'
+        WHEN 
+            ROUND(3959 * ACOS(
+                COS(RADIANS(CAST(lat AS DECIMAL))) *
+                COS(RADIANS(CAST(merch_lat AS DECIMAL))) *
+                COS(RADIANS(CAST(long AS DECIMAL)) - RADIANS(CAST(merch_long AS DECIMAL))) +
+                SIN(RADIANS(CAST(lat AS DECIMAL))) *
+                SIN(RADIANS(CAST(merch_lat AS DECIMAL)))
+            ), 2) BETWEEN 70 AND 85 THEN '70-85 miles'
+        WHEN 
+            ROUND(3959 * ACOS(
+                COS(RADIANS(CAST(lat AS DECIMAL))) *
+                COS(RADIANS(CAST(merch_lat AS DECIMAL))) *
+                COS(RADIANS(CAST(long AS DECIMAL)) - RADIANS(CAST(merch_long AS DECIMAL))) +
+                SIN(RADIANS(CAST(lat AS DECIMAL))) *
+                SIN(RADIANS(CAST(merch_lat AS DECIMAL)))
+            ), 2) BETWEEN 85 AND 100 THEN '85-100 miles'
+        ELSE '100+ miles'
+    END AS distance_range,
+    COUNT(*) AS total_transactions,
+    SUM(CASE WHEN is_fraud = 1 THEN 1 ELSE 0 END) AS fraudulent_transactions,
+    ROUND(
+        100.0 * SUM(CASE WHEN is_fraud = 1 THEN 1 ELSE 0 END) / COUNT(*),
+        2
+    ) AS fraud_percentage
+FROM bigfraud
+GROUP BY distance_range
+ORDER BY fraud_percentage DESC;
+
+
+-- 6. Job Category Risk Analysis
+SELECT 
+    job,
+    COUNT(*) as total_transactions,
+    SUM(CASE WHEN is_fraud = true THEN 1 ELSE 0 END) as fraud_count,
+    ROUND(100.0 * SUM(CASE WHEN is_fraud = true THEN 1 ELSE 0 END) / COUNT(*), 2) as fraud_percentage,
+    ROUND(AVG(amt), 2) as avg_transaction_amount
+FROM bigfraud
+GROUP BY job
+HAVING COUNT(*) > 50
+ORDER BY fraud_percentage DESC
+LIMIT 19;
+
+SELECT job, COUNT(job) AS jobcount
+FROM bigfraud
+GROUP BY job
+ORDER BY jobcount DESC;
+
+
+-- 7. Updating balanced_bigfraud with new features and preparing for export
+-- Check current balanced_bigfraud table
+SELECT *
+FROM balanced_bigfraud
+LIMIT 30;
+
+-- Adding job_category
+ALTER TABLE balanced_bigfraud
+ADD COLUMN job_category VARCHAR(255);
+
+UPDATE balanced_bigfraud
+SET job_category = 
+    CASE
+    WHEN job ILIKE '%accountant%' THEN 'Accounting'
+    WHEN job ILIKE '%therapist%' THEN 'Therapy'
+    WHEN job ILIKE '%consult%' THEN 'Consulting'
+    WHEN job ILIKE '%designer%' THEN 'Design'
+    WHEN job ILIKE '%editor%' THEN 'Editor'
+    WHEN job ILIKE '%therapist%' THEN 'Therapist'
+    WHEN job ILIKE '%broadcast%' THEN 'Broadcast'
+    WHEN job ILIKE '%environment%' THEN 'Environmental'
+    WHEN job ILIKE '%manager%' THEN 'Manager'
+    WHEN job ILIKE '%representative%' THEN 'Representative'
+    WHEN job ILIKE '%chemist%' THEN 'Chemistry'
+    WHEN job ILIKE '%barista%' THEN 'Barista'
+    WHEN job ILIKE '%charities%' OR job ILIKE '%charity%' THEN 'Charities'
+    WHEN job ILIKE '%producer%' THEN 'Producer'
+    WHEN job ILIKE '%director%' THEN 'Director'
+    WHEN job ILIKE '%buyer%' THEN 'Retail Buyer'
+    WHEN job ILIKE '%lecturer%' OR job ILIKE '%education%' THEN 'Education'
+    WHEN job ILIKE '%finance%' OR job ILIKE '%financial%' THEN 'Finance'
+    WHEN job ILIKE '%scientist%' THEN 'Scientist'
+    WHEN job ILIKE '%nurse%' THEN 'Nurse'
+    WHEN job ILIKE '%engineer%' THEN 'Engineer'
+    WHEN job ILIKE '%doctor%' THEN 'Doctor'
+    WHEN job ILIKE '%attorney%' OR job ILIKE '%lawyer%' THEN 'Lawyer'
+    WHEN job ILIKE '%develop%' THEN 'Developer'
+    ELSE 'Other'
+    END;
+
+SELECT job, job_category, COUNT(*) as count
+FROM balanced_bigfraud
+GROUP BY job, job_category
+ORDER BY count DESC;
+
+-- Adding amount_range
+ALTER TABLE balanced_bigfraud
+ADD COLUMN amt_range VARCHAR(20);
+
+UPDATE balanced_bigfraud
+SET amt_range = 
+    CASE 
+        WHEN amt < 500 THEN '0-500'
+        WHEN amt < 750 THEN '500-750'
+        WHEN amt < 1000 THEN '750-1000'
+        WHEN amt < 1250 THEN '1000-1250'
+        WHEN amt < 1500 THEN '1250-1500'
+        ELSE '1500+'
+    END;
+
+-- Adding distance_miles
+ALTER TABLE balanced_bigfraud 
+ADD COLUMN distance_miles DECIMAL(10,2);
+
+UPDATE balanced_bigfraud
+SET distance_miles = 
+    ROUND(
+        3959 * 
+        ACOS(
+            COS(RADIANS(CAST(COALESCE(lat, '0') AS DECIMAL))) * 
+            COS(RADIANS(CAST(COALESCE(merch_lat, '0') AS DECIMAL))) * 
+            COS(RADIANS(CAST(COALESCE(long, '0') AS DECIMAL)) - RADIANS(CAST(COALESCE(merch_long, '0') AS DECIMAL))) +
+            SIN(RADIANS(CAST(COALESCE(lat, '0') AS DECIMAL))) * 
+            SIN(RADIANS(CAST(COALESCE(merch_lat, '0') AS DECIMAL)))
+        ),
+        2
+    );
+
+-- Adding hour_of_day
+ALTER TABLE balanced_bigfraud
+ADD COLUMN hour_of_day SMALLINT;
+
+UPDATE balanced_bigfraud
+SET hour_of_day = CAST(SUBSTRING(trans_time, 1, 2) AS SMALLINT);
+
+-- Exporting balanced_bigfraud data
+UNLOAD ('SELECT * FROM balanced_bigfraud')
+TO 's3://final-project-credit-fraud/fraudfolder/balanced/balanced_bigfraud.csv'
+IAM_ROLE 'arn:aws:iam::971422719201:role/service-role/AmazonRedshift-CommandsAccessRole-20241118T094748'
+CSV HEADER
+PARALLEL OFF;
