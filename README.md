@@ -21,6 +21,11 @@ To predict:
   - Recall: 92%
   - Precision: 86%
   - Threshold: 0.3
+ 
+## Reproducibility
+- Refer to Google Colab Notebook for code with detailed instructions
+  - https://colab.research.google.com/drive/1UM8_ngomZoiyERg1Pf-X90m13-yKgAn-#scrollTo=INBE34JuDCNn
+- The code box labeled "Gradient Boosting Regressor using Optimal Threshold (0.3) for Better Recall" is the final model we decided on
 
 ## Business Recommendations
 - Warning or require authentication for transactions above $650
